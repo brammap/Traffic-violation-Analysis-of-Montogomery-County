@@ -1,0 +1,306 @@
+---
+title: "RStudio Sparklyr: Class 1"
+author: "Biagio Palese"
+date: "`r format(Sys.time(), '%d %B, %Y')`" 
+output: 
+  html_document:
+    
+    theme: flatly
+    toc: TRUE
+    toc_float: TRUE
+    code_download: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, cache = F}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  error = TRUE,
+  warning= FALSE,
+  message= FALSE)
+```
+
+#Introduction
+
+We are the analytical team called violator, We have been provided the opportunity to analyse the Traffic violation data of Montgomery city to help the newly started auto insurance company to setup initial policy quote trends which benefits both company and its customers. It has been updated daily from 2013, We combined the dataset with weather data of Montgomery county which help to achieve the view of weather effects on the traffic violation. The dataset have many factors such violation, dates, type of the vehicle, violation type, property damage which helps us to understand the trends. 
+
+### Prerequisites
+#java installation
+```{r}
+# using the link https://therinspark.com/appendix.html#appendix-install-java to install java
+# check the version of the java
+system("java -version")#has to be 1.8
+```
+#Installing sparklyr
+```{r}
+install.packages("sparklyr")
+install.packages("factoextra")#run if you don't have it installed
+packageVersion("sparklyr")#should be 1.7
+install.packages("modelr")
+install.packages("DescTools")
+install.packages("pROC")
+
+```
+
+
+##Loading Package
+```{r}
+library(tidyverse)#Manipulation techniques
+library(sparklyr)#spark enables to process data in cluster of computers
+library(DBI)#helps to view or program using SQL
+library(dbplot)#dplot for quicker charts
+library(cluster) # clustering algorithms
+library(factoextra) # clustering algorithms & visualization
+library(gridExtra)#plots are combined with grid formatting using this.
+library(modelr)     # provides easy pipeline modeling                             functions
+library(broom) 
+library(scales)
+library(DescTools)
+library(pROC)
+
+```
+
+#Reading Data 
+```{r}
+v <- read_csv('S.csv') #reading the sample set of traffic violation data S.csv
+```
+
+##DATA Cleaning and preparation 
+```{r}
+spec(v) #view the datatypes of the DATA
+
+v <- select(v, -SeqID,-Latitude, -Longitude, -Geolocation) #Eliminating the garbage DATA as part of cleaning.
+
+#DATA FORMATTING
+
+v$Belts[v$Belts == 'No'] <- 1
+v$Belts[v$Belts == 'Yes'] <- 0
+v[v == 'Yes'] <- as.character(1)
+v[v == 'No'] <- as.character(0)
+v$Contributed_Accident[v$Contributed_Accident == 'TRUE'] <- 1
+v$Contributed_Accident[v$Contributed_Accident == 'FALSE'] <- 1
+
+#Datatype cleaning and preparation.
+sapply(v, class)
+v$month <- as.numeric(v$month)
+v$day <- as.numeric(v$day)
+v$Accident <- as.numeric(v$Accident)
+v$Belts <- as.numeric(v$Belts)
+v$personal_injury <- as.numeric(v$personal_injury)
+v$property_damage <- as.numeric(v$property_damage)
+v$Fatal <- as.numeric(v$Fatal)
+v$commercial_license <- as.numeric(v$commercial_license)
+v$Commercial_Vehicle <- as.numeric(v$Commercial_Vehicle)
+v$HAZMAT <- as.numeric(v$HAZMAT)
+v$Alcohol <- as.numeric(v$Alcohol)
+v$Work_Zone <- as.numeric(v$Work_Zone)
+v$Search_Conducted <- as.numeric(v$Search_Conducted)
+
+
+#NEW Columns
+
+v <- v %>% mutate(v_score = Accident+ Belts+ personal_injury+ property_damage+ Fatal+ commercial_license + Commercial_Vehicle+ HAZMAT+ Work_Zone+ Contributed_Accident) #v_score column is created to judge the violations.
+
+colnames(v)
+colnames(v)[28] <- "Vyear" #changed column name year to Vyear to avoid conflict between year and vehicle year
+
+write_csv(v, 'V.csv') #exported out the new database into csv
+
+```
+
+#connecting to Spark
+```{r}
+sc <- spark_connect(master = "local", version = "2.3")#connect to this local cluster
+```
+
+
+#Web Interface
+```{r}
+spark_web(sc)
+```
+
+
+##Readind data into spark
+```{r}
+v<- spark_read_csv(sc, "V.csv") #reading the cleaned data V.csv into spark
+```
+
+##Analysis on the which car marker is involved in the high number of violations which has effect on the insurance (Question 1)
+
+```{r}
+##Data manipulation
+a1 <- v %>% na.omit() %>% filter(Accident == 1 | personal_injury == 1| property_damage == 1 | Contributed_Accident == 1) %>% group_by(Make) %>% summarise(cases =count()) 
+
+a2<- v %>% na.omit() %>% group_by(Make) %>% summarise(Total =count()) 
+
+ta1 <- a1 %>% inner_join(a2, by = 'Make')%>%  filter(Total > 50) %>% mutate(acc_per = (cases/Total)*100) %>% arrange(desc(Total), desc(cases), desc(acc_per)) %>% collect()
+
+
+ta2 <- a1 %>% inner_join(a2, by = 'Make')%>%  filter(Total > 50) %>% mutate(acc_per = (cases/Total)*100) %>% arrange(desc(acc_per))
+
+
+##Data visualization
+
+pa1 <- ggplot(data = ta1, aes(x= Make, y= acc_per)) + geom_col()+ coord_flip() + ggtitle("Damage percentage")
+pa2 <- ggplot(data = ta1, aes(x= Make, y= Total)) + geom_col(fill = "blue")+ coord_flip() + ggtitle("Total cases")
+pa3 <- ggplot(data = ta1, aes(x= Make, y= cases)) + geom_col(fill = "red")+ coord_flip()+ ggtitle("Damage involved cases")
+
+grid.arrange(pa1, pa2,pa3, nrow = 1)
+
+```
+## Analysis summary
+
+Looking at the damage percentage chart, Thompson and Gillig maker's has highest damage involved cases and from the total cases and damage involved cases are quite low because of number of violation were quite low but had high damage when a violation happens Concluding that there is quite chance of high damage when violations occur conveying that insurance for this maker should be set high rates than other makers as good business strategy.
+
+Further we classify car makers Honda, Toyota, Nissan, Ford and chevy as group 2, as they have high number of total cases and high number of the cases which involve damage but accident percentage is around 4% conclude that this group has less number of damage cases compare to total cases but high number of damage cases compare to other maker, group 2 maker should quoted above average rates to be good in business point of view and affordable price for customers.
+
+The 3rd group of makers such as Volkswagen, Subaru, Mazda, Lexus, KIA, Infiniti, Hyundai, Dodge, Accura had low violation but had similar damage to group 2 which is around 4% saying that high damage can been seen with cars but lot less violations and insurance should be little low  with this group comparing to group 3
+
+The premium car segment is the fourth group which contains car makers such as Range rover, Porsche, Mercedes, Audi, BMW, Bentley, Jaguar, Land Rover, Maserati, Tesla has damage percentage of 2 - 7% which higher compare to other groups as the number of total cases are quite low and this cars costs higher to repair the damage. All this trend convey that this group of cars should be quotes high prices of insurance to have good business advantage.
+
+
+##Analysis on how time of the drive will have effect on the damage violations (Question 2)
+```{r}
+
+##Data manipulation
+
+b1 <- list("01:00:00","02:00:00","03:00:00","04:00:00","05:00:00","06:00:00","07:00:00","08:00:00","09:00:00","10:00:00","11:00:00","12:00:00","13:00:00","14:00:00","15:00:00","16:00:00","17:00:00","18:00:00","19:00:00","20:00:00","21:00:00","22:00:00","23:00:00","23:59:59") ##time frame to summarise the count
+
+b2 <- "00:00:00" ##to initialize the for loop
+
+b3 <- list("12AM-01AM","01AM-02AM","02AM-03AM","03AM-04AM","04AM-05AM","05AM-06AM","06AM-07AM","07AM-08AM","08AM-09AM","09AM-10AM","10AM-11AM","11AM-12pM","12PM-01PM","01PM-02PM","02PM-03PM","03PM-04PM","04PM-05PM","05PM-06PM","06PM-07PM","07PM-08PM","08PM-09PM","09PM-10PM","10PM-11PM","11PM-12AM") ## for visualization time frame in easy to read
+
+b4 <- data.frame(matrix(ncol = 4, nrow = 0)) ## to initialize new table with 3 columns
+
+colnames(b4) <-c("Time","cases","V_score","Total") ##naming the columns
+
+for (i in 1:24) {
+  
+  assign('b5',b1[[i]]) #To assign the list item into a variable
+  
+b6 <- v %>% filter(Accident == 1 | personal_injury == 1 | property_damage == 1 | Contributed_Accident == 1) %>% filter(time_of_stop > b2 & time_of_stop < b5) %>% summarise(n =count(),avg(v_score)*10) ##filter and summarizing the data to be stored in the table
+b7 <- v %>%  filter(time_of_stop > b2 & time_of_stop < b5) %>% summarise(n =count())
+
+b4[i,] <- data.frame(b3[i],b6,b7)## to insert the data into the table.
+
+ b2 <- b5 #move to next iteration time frame logic. 
+}
+
+## Data visualization 
+b4 <- b4 %>% collect() %>% mutate(average = (cases/Total)*1000) 
+b4$Time<-factor(b4$Time, levels = b4$Time)
+ggplot(data = b4, aes(x=Time, y=average))+geom_point(color = "red", size = 3)+geom_point(aes(x=Time, y=V_score, alpha = V_score), color ='#0000FF' ,size = 3) 
+
+
+```
+
+
+
+##Analaysis on the violations which had greater than 2 v_score in terms of car year (Question 3)
+```{r}
+##Data Manipulation
+c1 <- v %>% filter(Vyear> 1970 & Vyear<2023) %>% filter(v_score > 1) %>% select(Vyear,v_score) %>% group_by(v_score,Vyear) %>% count() %>% arrange(desc(v_score),desc(Vyear), desc(n))
+view(c1)
+##Data visualization
+v %>% filter(Vyear> 1970 & Vyear<2023) %>% filter(v_score > 1) %>% select(Vyear,v_score)   %>% 
+dbplot_raster( Vyear, v_score, fill = -n(), resolution = 100)
+
+```
+
+
+##Analaysis on Does driver’s state and weather have influence in the accidents?
+```{r}
+#cluster
+v1 <- read_csv("S.csv") #reading the data into R studio for clustering.
+
+glimpse(v1)
+k <- v1%>% na.omit() #omiting the NA values
+
+c <- k %>% filter(Accident == 'Yes'&(Driver_State == "DC"|Driver_State == "MD"|Driver_State == "VA" )) %>% select(Avg_temp, Avg_wind, precipitation) #filtering table for kmeans 
+
+df <- c %>% scale() #scaling the data
+glimpse(df)
+view(df)
+
+fviz_nbclust(df, kmeans, method = "wss") #Checking for centroids for kmeans
+k3 <- kmeans(df, centers = 3, nstart = 25) #kmeans analysis
+
+
+#cluster visualization
+fviz_cluster(k3, geom = "point",  data = df) + ggtitle("k = 3")
+
+
+#cluster statistical analysis
+
+d <- k %>% filter(Accident == 'Yes'&(Driver_State == "DC"|Driver_State == "MD"|Driver_State == "VA" )) %>% select(Avg_temp, Avg_wind, precipitation, Driver_State) # filtering table to compare the results
+
+k3 #stats of kmeans
+
+k3$centers
+
+table(k3$cluster, d$Driver_State) #table comparing the k means and data
+```
+
+
+##Can we predict personal injury?
+```{r}
+#converting variables into factor variables 
+v <- read_csv("V.csv")
+v$Alcohol<-as.factor(v$Alcohol)
+v$Belts<-as.factor(v$Belts)
+
+#Taking samples
+
+set.seed(123)
+sample <- sample(c(TRUE, FALSE), nrow(v), replace = T, prob = c(0.6,0.4))
+train <- v[sample, ]
+test <- v[!sample, ]
+
+
+#Binary logistic regression
+
+l1 <- glm(personal_injury ~ VehicleType+Alcohol+Belts, family = binomial(), train)
+summary(l1)
+
+#Grouping vehicle type to understand insignificant vehicle type
+v %>% group_by(VehicleType) %>% summarise(count=n()) %>% arrange(desc(count))
+
+#finding c-stat
+Cstat(x = predict(l1, method="response"), 
+      resp = model.response(model.frame(l1)))
+
+#comparing the trained model with test model
+test %>% 
+  add_predictions(l1) %>%
+  summarise(MSE = mean((personal_injury - pred)^2))
+ 
+ train %>% 
+  add_predictions(l1) %>%
+  summarise(MSE = mean((personal_injury - pred)^2))
+ 
+
+#checking for interaction effect
+l2 <- glm(personal_injury ~ VehicleType+Alcohol*Belts, family = binomial(), train)
+summary(l2)
+```
+
+
+
+##Disconnecting Spark
+```{r}
+spark_disconnect_all()
+```
+
+##Thank you For the Support.
+
+##Naga
+##Sakthi
+##Mansi
+##mujtaba
+
+
+
+
+
+
